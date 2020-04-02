@@ -24,8 +24,10 @@ import com.amazonaws.flink.refarch.events.kinesis.Event;
 import com.amazonaws.flink.refarch.events.kinesis.TripEvent;
 import com.amazonaws.flink.refarch.utils.ElasticsearchJestSink;
 import com.amazonaws.flink.refarch.utils.GeoUtils;
+import com.amazonaws.services.kinesisanalytics.flink.connectors.producer.FlinkKinesisFirehoseProducer;
 import com.google.common.collect.ImmutableMap;
 import com.google.common.collect.Iterables;
+import org.apache.flink.api.common.serialization.SimpleStringSchema;
 import org.apache.flink.api.java.tuple.Tuple;
 import org.apache.flink.api.java.tuple.Tuple1;
 import org.apache.flink.api.java.tuple.Tuple3;
@@ -61,6 +63,19 @@ public class ProcessTaxiStream {
   private static final Logger LOG = LoggerFactory.getLogger(ProcessTaxiStream.class);
 
 
+  private static FlinkKinesisFirehoseProducer<String> createFirehoseSinkFromStaticConfig() {
+    /*
+     * com.amazonaws.services.kinesisanalytics.flink.connectors.config.ProducerConfigConstants
+     * lists of all of the properties that firehose sink can be configured with.
+     */
+
+    Properties outputProperties = new Properties();
+    outputProperties.setProperty(ConsumerConfigConstants.AWS_REGION, "us-east-1");
+    String outputDeliveryStreamName = "firehose-s3-test-buffering-DeliveryStream-Q5P2ENKGCBGJ";
+    FlinkKinesisFirehoseProducer<String> sink =
+            new FlinkKinesisFirehoseProducer<>(outputDeliveryStreamName, new SimpleStringSchema(), outputProperties);
+    return sink;
+  }
   public static void main(String[] args) throws Exception {
     ParameterTool pt = ParameterTool.fromArgs(args);
 
@@ -156,8 +171,9 @@ public class ProcessTaxiStream {
           .put("region", pt.get("region", DEFAULT_REGION))
           .build();
 
-      pickupCounts.addSink(new ElasticsearchJestSink<>(config, indexName, "pickup_count"));
-      tripDurations.addSink(new ElasticsearchJestSink<>(config, indexName, "trip_duration"));
+      //pickupCounts.addSink(new ElasticsearchJestSink<>(config, indexName, "pickup_count"));
+      pickupCounts.map(PickupCount::toString).addSink(createFirehoseSinkFromStaticConfig());
+      //tripDurations.addSink(new ElasticsearchJestSink<>(config, indexName, "trip_duration"));
     }
 
 
