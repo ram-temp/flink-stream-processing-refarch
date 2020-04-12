@@ -27,17 +27,20 @@ import com.amazonaws.flink.refarch.utils.GeoUtils;
 import com.amazonaws.services.kinesisanalytics.flink.connectors.producer.FlinkKinesisFirehoseProducer;
 import com.google.common.collect.ImmutableMap;
 import com.google.common.collect.Iterables;
+import org.apache.flink.api.common.serialization.SimpleStringEncoder;
 import org.apache.flink.api.common.serialization.SimpleStringSchema;
 import org.apache.flink.api.java.tuple.Tuple;
 import org.apache.flink.api.java.tuple.Tuple1;
 import org.apache.flink.api.java.tuple.Tuple3;
 import org.apache.flink.api.java.utils.ParameterTool;
 import org.apache.flink.contrib.streaming.state.RocksDBStateBackend;
+import org.apache.flink.core.fs.Path;
 import org.apache.flink.streaming.api.TimeCharacteristic;
 import org.apache.flink.streaming.api.datastream.DataStream;
 import org.apache.flink.streaming.api.environment.CheckpointConfig;
 import org.apache.flink.streaming.api.environment.CheckpointConfig.ExternalizedCheckpointCleanup;
 import org.apache.flink.streaming.api.environment.StreamExecutionEnvironment;
+import org.apache.flink.streaming.api.functions.sink.filesystem.StreamingFileSink;
 import org.apache.flink.streaming.api.windowing.time.Time;
 import org.apache.flink.streaming.api.windowing.windows.TimeWindow;
 import org.apache.flink.streaming.connectors.kinesis.FlinkKinesisConsumer;
@@ -54,7 +57,7 @@ import java.util.stream.StreamSupport;
 
 
 public class ProcessTaxiStream {
-  private static final String DEFAULT_REGION = "eu-west-1";
+  private static final String DEFAULT_REGION = "eu-east-1";
 
   private static final int MIN_PICKUP_COUNT = 2;
   private static final int GEOHASH_PRECISION = 6;
@@ -63,15 +66,16 @@ public class ProcessTaxiStream {
   private static final Logger LOG = LoggerFactory.getLogger(ProcessTaxiStream.class);
 
 
-  private static FlinkKinesisFirehoseProducer<String> createFirehoseSinkFromStaticConfig() {
+  private static FlinkKinesisFirehoseProducer<String> createFirehoseSinkFromStaticConfig(final String firehoseDeliveryStream,
+                                                                                         final String awsRegion) {
     /*
      * com.amazonaws.services.kinesisanalytics.flink.connectors.config.ProducerConfigConstants
      * lists of all of the properties that firehose sink can be configured with.
      */
 
     Properties outputProperties = new Properties();
-    outputProperties.setProperty(ConsumerConfigConstants.AWS_REGION, "us-east-1");
-    String outputDeliveryStreamName = "firehose-s3-test-buffering-DeliveryStream-Q5P2ENKGCBGJ";
+    outputProperties.setProperty(ConsumerConfigConstants.AWS_REGION, awsRegion);
+    String outputDeliveryStreamName = firehoseDeliveryStream;
     FlinkKinesisFirehoseProducer<String> sink =
             new FlinkKinesisFirehoseProducer<>(outputDeliveryStreamName, new SimpleStringSchema(), outputProperties);
     return sink;
@@ -98,7 +102,6 @@ public class ProcessTaxiStream {
         kinesisConsumerConfig)
     );
 
-
     DataStream<TripEvent> trips = kinesisStream
         .rebalance()
         .assignTimestampsAndWatermarks(new PunctuatedAssigner())
@@ -106,7 +109,6 @@ public class ProcessTaxiStream {
         .map(event -> (TripEvent) event)
         .filter(GeoUtils::hasValidCoordinates)
         .filter(GeoUtils::nearNYC);
-
 
     DataStream<PickupCount> pickupCounts = trips
         .map(trip -> new Tuple1<>(GeoHash.geoHashStringWithCharacterPrecision(trip.pickupLat, trip.pickupLon, GEOHASH_PRECISION)))
@@ -150,32 +152,10 @@ public class ProcessTaxiStream {
           }
         });
 
-
-    if (pt.has("checkpoint")) {
-      env.enableCheckpointing(5_000);
-
-      CheckpointConfig checkpointConfig = env.getCheckpointConfig();
-      checkpointConfig.enableExternalizedCheckpoints(ExternalizedCheckpointCleanup.DELETE_ON_CANCELLATION);
-
-      env.setStateBackend(new RocksDBStateBackend(new URI(pt.getRequired("checkpoint"))));
-
-      LOG.info("writing checkpoints to {}", pt.get("checkpoint"));
-    }
-
-
-    if (pt.has("es-endpoint")) {
-      final String indexName = pt.get("es-index", ES_DEFAULT_INDEX);
-
-      final ImmutableMap<String, String> config = ImmutableMap.<String, String>builder()
-          .put("es-endpoint", pt.getRequired("es-endpoint"))
-          .put("region", pt.get("region", DEFAULT_REGION))
-          .build();
-
-      //pickupCounts.addSink(new ElasticsearchJestSink<>(config, indexName, "pickup_count"));
-      pickupCounts.map(PickupCount::toString).addSink(createFirehoseSinkFromStaticConfig());
-      //tripDurations.addSink(new ElasticsearchJestSink<>(config, indexName, "trip_duration"));
-    }
-
+    String outputDeliveryStreamName = pt.get("outputDeliveryStreamName");
+    String outputDeliveryStreamRegion = pt.get("outputDeliveryStreamRegion");
+    pickupCounts.map(PickupCount::toString).addSink(createFirehoseSinkFromStaticConfig(outputDeliveryStreamName,
+            outputDeliveryStreamRegion));
 
     LOG.info("Starting to consume events from stream {}", pt.getRequired("stream"));
 
